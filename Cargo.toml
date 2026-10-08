@@ -1,0 +1,18 @@
+# Shared libraries of vlpds, vlRelay and delta. Users depend on the crates by
+# path; this workspace exists to build and test them on their own.
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+# `cargo test` here: quick to build and link, still fast enough to run
+# (crypto, CBOR and MST code is slow at opt-level 0), as vlpds's.
+[profile.test]
+opt-level = 1
+debug = 0
+lto = false
+codegen-units = 256
+incremental = true
+
+[profile.test.package."*"]
+opt-level = 2
+codegen-units = 16

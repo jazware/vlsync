@@ -1,0 +1,30 @@
+[package]
+name = "vlsync-firehose"
+version = "0.1.0"
+edition = "2021"
+description = "Node logs in the bucket as their readers see them, the firehose that merges them into one seq-ordered subscribeRepos stream, and cursor backfill from S3"
+license = "MIT"
+publish = false
+
+[dependencies]
+vlsync-store = { path = "../vlsync-store" }
+vlsync-atproto = { path = "../vlsync-atproto" }
+anyhow = "1"
+axum = { version = "0.8", features = ["ws", "macros", "http2"] }
+bytes = "1"
+futures = "0.3"
+hyper = { version = "1", features = ["server", "client", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service"] }
+object_store = { version = "0.14", features = ["aws"] }
+parking_lot = "0.12"
+prometheus = { version = "0.14", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.29", features = ["__rustls-tls"] }
+tracing = "0.1"
+
+[dev-dependencies]
+vlsync-atproto = { path = "../vlsync-atproto", features = ["test-clock"] }
+sha2 = "0.11"

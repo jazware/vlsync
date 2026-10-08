@@ -1,0 +1,39 @@
+[package]
+name = "vlsync-store"
+version = "0.1.0"
+edition = "2021"
+description = "The object store client and its request accounting, the log segment format, slots and slot-major keys, feature levels, and the process plumbing (lifecycle, /metrics) vlsync servers share"
+license = "MIT"
+publish = false
+
+[features]
+# jemalloc's stats in /metrics (vlpds_jemalloc_bytes): for a binary whose
+# global allocator is jemalloc
+jemalloc = ["dep:tikv-jemalloc-ctl"]
+# TEST ONLY, never in a release image: the test feature level
+# (version::TEST_LEVEL = newest real level + 1), which changes the segment
+# magic/header, so rolling upgrades are exercised with a real format change.
+test-level = []
+
+[dependencies]
+slatedb = { package = "vlsync-slatedb", path = "../vlsync-slatedb" }
+anyhow = "1"
+async-trait = "0.1"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+futures = "0.3"
+object_store = { version = "0.14", features = ["aws"] }
+parking_lot = "0.12"
+prometheus = { version = "0.14", default-features = false }
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+tikv-jemalloc-ctl = { version = "0.7", features = ["stats"], optional = true }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+# log segment body compression (the same zstd SlateDB links)
+zstd = "0.13"
+
+[dev-dependencies]
+axum = { version = "0.8", features = ["ws", "macros", "http2"] }

@@ -46,6 +46,18 @@ pub fn component(prefix: &str, path: &str) -> &'static str {
             let _shard = it.next();
             state_component(it.next().unwrap_or(""))
         }
+        // delta's per-repo layout: `repos/<repo>/{manifest.json,keys,wal,packs,state*}`
+        "repos" => {
+            let _repo = it.next();
+            match it.next().unwrap_or("") {
+                "manifest.json" => "delta_manifest",
+                "keys" => "delta_keys",
+                "wal" => "delta_wal",
+                "packs" => "delta_pack",
+                s if s.starts_with("state") => state_component(it.next().unwrap_or("")),
+                _ => "other",
+            }
+        }
         _ => "other",
     }
 }
@@ -459,6 +471,11 @@ mod tests {
         assert_eq!(component("vlpds", "vlpds/state/005/gc/manifest.boundary"), "state_gc_boundary");
         assert_eq!(component("r", "r/qlog/manifest"), "qlog_manifest");
         assert_eq!(component("r", "r/qlog/leader"), "qlog_leader");
+        assert_eq!(component("", "repos/mono/wal/000000000042.seg"), "delta_wal");
+        assert_eq!(component("p", "p/repos/mono/packs/000000000001-abc.pack"), "delta_pack");
+        assert_eq!(component("", "repos/mono/manifest.json"), "delta_manifest");
+        assert_eq!(component("", "repos/mono/state-e3/compacted/01J.sst"), "state_sst");
+        assert_eq!(component("", "repos/mono/state/manifest/00000000000000000001.manifest"), "state_manifest");
         assert_eq!(component("r", "r/qlog/state/compacted/01J.sst"), "state_sst");
         assert_eq!(component("r", "r/qlog/state-e7/manifest/00000000000000000001.manifest"), "state_manifest");
         assert_eq!(component("r", "r/log/qlog/000000000003.seg"), "log_segment");

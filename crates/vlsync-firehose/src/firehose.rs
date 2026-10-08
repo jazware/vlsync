@@ -28,7 +28,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, watch};
-use vlsync_atproto::events;
+use vlatproto::events;
+use vlatproto::frame::{frame_did, frame_meta, info_frame, FrameMeta};
 use vlsync_store::segment::{self, LogObject};
 use vlsync_store::slots::SlotRange;
 
@@ -242,85 +243,6 @@ pub fn event_slot(frame: &[u8]) -> u16 {
     frame_did(frame).map(vlsync_store::slots::slot_of_bytes).unwrap_or(0)
 }
 
-fn frame_did(f: &[u8]) -> Option<&[u8]> {
-    let mut i = 0;
-    cbor_skip(f, &mut i, 0)?; // header
-    let (major, n) = cbor_head(f, &mut i)?;
-    if major != 5 {
-        return None;
-    }
-    for _ in 0..n {
-        let key = cbor_text(f, &mut i)?;
-        if key == b"repo" || key == b"did" {
-            return cbor_text(f, &mut i);
-        }
-        cbor_skip(f, &mut i, 0)?;
-    }
-    None
-}
-
-/// A frame's event type.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FrameKind {
-    Commit,
-    Sync,
-    Identity,
-    Account,
-    /// `#info`, errors, anything else.
-    Other,
-}
-
-/// What a [`FrameFilter`] sees of a frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FrameMeta<'a> {
-    pub kind: FrameKind,
-    /// `repo` of a #commit, `did` of a #sync, #identity or #account: the
-    /// key each kind is checked and applied by, so a frame carrying both
-    /// can't pass as the other DID. None for other kinds or a frame
-    /// without it.
-    pub did: Option<&'a [u8]>,
-}
-
-/// The type and DID of a frame, read straight from its DAG-CBOR without
-/// decoding it.
-pub fn frame_meta(f: &[u8]) -> FrameMeta<'_> {
-    let mut meta = FrameMeta { kind: FrameKind::Other, did: None };
-    let mut i = 0;
-    let Some((5, n)) = cbor_head(f, &mut i) else { return meta };
-    for _ in 0..n {
-        let Some(key) = cbor_text(f, &mut i) else { return meta };
-        if key == b"t" {
-            meta.kind = match cbor_text(f, &mut i) {
-                Some(b"#commit") => FrameKind::Commit,
-                Some(b"#sync") => FrameKind::Sync,
-                Some(b"#identity") => FrameKind::Identity,
-                Some(b"#account") => FrameKind::Account,
-                Some(_) => FrameKind::Other,
-                None => return meta,
-            };
-        } else if cbor_skip(f, &mut i, 0).is_none() {
-            return meta;
-        }
-    }
-    let want: &[u8] = match meta.kind {
-        FrameKind::Commit => b"repo",
-        FrameKind::Sync | FrameKind::Identity | FrameKind::Account => b"did",
-        FrameKind::Other => return meta,
-    };
-    let Some((5, n)) = cbor_head(f, &mut i) else { return meta };
-    for _ in 0..n {
-        let Some(key) = cbor_text(f, &mut i) else { return meta };
-        if key == want {
-            meta.did = cbor_text(f, &mut i);
-            return meta;
-        }
-        if cbor_skip(f, &mut i, 0).is_none() {
-            return meta;
-        }
-    }
-    meta
-}
-
 /// Frames subscribeRepos leaves out, live and in cursor backfill (opt-in
 /// through [`Firehose::set_filter`]; vlRelay's takedowns). A skipped frame
 /// keeps its seq, so consumers see a gap rather than renumbered events.
@@ -331,62 +253,6 @@ pub trait FrameFilter: Send + Sync + 'static {
     /// all of its subscribers. Change it after the change `skip` sees.
     fn generation(&self) -> Option<u64>;
     fn skip(&self, frame: &FrameMeta<'_>) -> bool;
-}
-
-/// (major type, argument) of the item at `i`; definite lengths only (DAG-CBOR).
-fn cbor_head(f: &[u8], i: &mut usize) -> Option<(u8, u64)> {
-    let b = *f.get(*i)?;
-    *i += 1;
-    let n = match b & 0x1f {
-        n @ 0..=23 => return Some((b >> 5, n as u64)),
-        24 => 1,
-        25 => 2,
-        26 => 4,
-        27 => 8,
-        _ => return None,
-    };
-    let bytes = f.get(*i..*i + n)?;
-    *i += n;
-    Some((b >> 5, bytes.iter().fold(0u64, |a, x| a << 8 | *x as u64)))
-}
-
-fn cbor_text<'a>(f: &'a [u8], i: &mut usize) -> Option<&'a [u8]> {
-    let (major, n) = cbor_head(f, i)?;
-    if major != 3 {
-        return None;
-    }
-    let s = f.get(*i..i.checked_add(usize::try_from(n).ok()?)?)?;
-    *i += s.len();
-    Some(s)
-}
-
-fn cbor_skip(f: &[u8], i: &mut usize, depth: u32) -> Option<()> {
-    if depth > 64 {
-        return None;
-    }
-    let (major, n) = cbor_head(f, i)?;
-    match major {
-        2 | 3 => {
-            let end = i.checked_add(usize::try_from(n).ok()?)?;
-            if end > f.len() {
-                return None;
-            }
-            *i = end;
-        }
-        4 => {
-            for _ in 0..n {
-                cbor_skip(f, i, depth + 1)?;
-            }
-        }
-        5 => {
-            for _ in 0..n.checked_mul(2)? {
-                cbor_skip(f, i, depth + 1)?;
-            }
-        }
-        6 => cbor_skip(f, i, depth + 1)?,
-        _ => {}
-    }
-    Some(())
 }
 
 #[derive(Clone)]
@@ -525,7 +391,7 @@ pub struct Firehose {
 
 impl Firehose {
     pub fn new(opts: Options) -> Arc<Firehose> {
-        let floor = opts.start_floor.unwrap_or_else(|| crate::log::seq_floor(vlsync_atproto::tid::now_micros()));
+        let floor = opts.start_floor.unwrap_or_else(|| crate::log::seq_floor(vlatproto::tid::now_micros()));
         Arc::new(Firehose {
             head: watch::channel(0).0,
             ring: RwLock::new(VecDeque::new()),
@@ -856,9 +722,8 @@ impl Firehose {
                 metrics::FIREHOSE_EVENTS.inc_by(batch.events.len() as u64);
                 metrics::FIREHOSE_BATCH.observe(batch.events.len() as f64);
                 if !fh.counted {
-                    metrics::FIREHOSE_EMIT_DELAY.observe(
-                        vlsync_atproto::tid::now_micros().saturating_sub((batch.key(0) >> 8) as u64) as f64 / 1e6,
-                    );
+                    metrics::FIREHOSE_EMIT_DELAY
+                        .observe(vlatproto::tid::now_micros().saturating_sub((batch.key(0) >> 8) as u64) as f64 / 1e6);
                 }
                 fh.push(batch);
             }
@@ -1108,7 +973,7 @@ impl Firehose {
                 }
                 c > self.last_emitted.load(Ordering::Acquire)
             } else {
-                let now = crate::log::seq_floor(vlsync_atproto::tid::now_micros()) | 0xff;
+                let now = crate::log::seq_floor(vlatproto::tid::now_micros()) | 0xff;
                 c > self.last_emitted.load(Ordering::Acquire).max(now)
             };
             if future {
@@ -2251,38 +2116,23 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
-fn info_frame(name: &str, message: &str) -> Vec<u8> {
-    use vlsync_atproto::cbor::*;
-    let mut out = Vec::new();
-    write_map_head(&mut out, 2);
-    write_text(&mut out, "t");
-    write_text(&mut out, "#info");
-    write_text(&mut out, "op");
-    write_uint(&mut out, 1);
-    write_map_head(&mut out, 2);
-    write_text(&mut out, "name");
-    write_text(&mut out, name);
-    write_text(&mut out, "message");
-    write_text(&mut out, message);
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use object_store::{ObjectStoreExt, PutPayload};
+    use vlatproto::frame::FrameKind;
     use vlsync_store::segment::SegmentBuilder;
 
     /// A distinct did:plc for each `i`.
     fn bulk_did(i: u64) -> String {
         use sha2::{Digest, Sha256};
         let h = Sha256::digest(format!("vlpds-bulk:{i}").as_bytes());
-        format!("did:plc:{}", &vlsync_atproto::cid::base32_encode(&h)[..24])
+        format!("did:plc:{}", &vlatproto::cid::base32_encode(&h)[..24])
     }
 
     /// A #commit, #sync, #identity or #account (by `kind % 4`) for `did`.
     fn kind_frame(kind: usize, did: &str, seq: i64) -> Bytes {
-        let cid = vlsync_atproto::cid::Cid::dag_cbor(b"x");
+        let cid = vlatproto::cid::Cid::dag_cbor(b"x");
         let f = match kind % 4 {
             0 => {
                 let ops = [
@@ -2366,41 +2216,6 @@ mod tests {
             matches!(f.kind, FrameKind::Commit | FrameKind::Sync)
                 && f.did == self.did.lock().as_deref().map(str::as_bytes)
         }
-    }
-
-    /// frame_meta reads each kind's own DID key, even with the other one
-    /// in the frame, and never panics on garbage.
-    #[test]
-    fn frame_meta_reads_the_kind_and_its_did() {
-        use vlsync_atproto::cbor::*;
-        let did = bulk_did(1);
-        for (k, kind) in
-            [FrameKind::Commit, FrameKind::Sync, FrameKind::Identity, FrameKind::Account].into_iter().enumerate()
-        {
-            let f = kind_frame(k, &did, 7);
-            assert_eq!(frame_meta(&f), FrameMeta { kind, did: Some(did.as_bytes()) });
-        }
-        // a #commit carrying a `did` (sorted first) is still its `repo`'s
-        let mut f = Vec::new();
-        write_map_head(&mut f, 2);
-        write_text(&mut f, "t");
-        write_text(&mut f, "#commit");
-        write_text(&mut f, "op");
-        write_uint(&mut f, 1);
-        write_map_head(&mut f, 2);
-        write_text(&mut f, "did");
-        write_text(&mut f, "did:plc:other");
-        write_text(&mut f, "repo");
-        write_text(&mut f, "did:plc:real");
-        assert_eq!(frame_meta(&f), FrameMeta { kind: FrameKind::Commit, did: Some(b"did:plc:real".as_slice()) });
-        let info = info_frame("OutdatedCursor", "x");
-        assert_eq!(frame_meta(&info), FrameMeta { kind: FrameKind::Other, did: None });
-        let full = kind_frame(0, &did, 7);
-        for n in 0..full.len() {
-            let m = frame_meta(&full[..n]);
-            assert!(m.did.is_none_or(|d| d == did.as_bytes()), "truncated at {n}");
-        }
-        assert_eq!(frame_meta(b"").kind, FrameKind::Other);
     }
 
     /// A batch asks the filter once per generation (every subscriber shares
@@ -2494,7 +2309,7 @@ mod tests {
     #[test]
     #[ignore]
     fn sharded_filter_cost() {
-        let cid = vlsync_atproto::cid::Cid::dag_cbor(b"x");
+        let cid = vlatproto::cid::Cid::dag_cbor(b"x");
         let ops =
             [events::RepoOp { action: "create", path: "app.bsky.feed.post/3kabcdefghij2", cid: Some(cid), prev: None }];
         let evs: Vec<(i64, Bytes)> = (0..2000u64)
@@ -2776,7 +2591,7 @@ mod tests {
             }
         }
         let (n, subs, per_batch) = (40_000usize, 16usize, 500usize);
-        let cid = vlsync_atproto::cid::Cid::dag_cbor(b"x");
+        let cid = vlatproto::cid::Cid::dag_cbor(b"x");
         let ops = [events::RepoOp { action: "create", path: "app.bsky.feed.post/3k", cid: Some(cid), prev: None }];
         let blocks = vec![7u8; 5000];
         let frames: Vec<Bytes> = (0..n as u64)

@@ -1,5 +1,6 @@
 # Shared libraries of vlpds, vlRelay and delta. Users depend on the crates by
-# path; this workspace exists to build and test them on their own.
+# path (their public repos, by git rev); this workspace builds and tests them
+# on their own.
 [workspace]
 resolver = "2"
 members = ["crates/*"]

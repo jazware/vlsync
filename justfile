@@ -18,14 +18,16 @@ fmt:
 fmt-check:
     cargo fmt --all --check
 
-# vlsync is published in jazware/vlpds as it is (scripts/vlpds-public): no private names or secrets here
+# No private names or secrets (the public export's audit patterns; monorepo only)
 check-private:
-    python3 ../../scripts/vlpds-public/vlpds_public.py scan .
+    python3 ../../scripts/vlsync-public/vlsync_public.py scan .
 
 ci: fmt-check check-private check clippy test
 
-# What uses vlsync, checked against this tree (vlpds, vlRelay, delta)
+# What uses vlsync, checked against this tree (vlpds, vlRelay and its interop
+# tests, delta; monorepo only)
 check-users:
     cd ../vlpds && cargo check --all-targets
     cd ../vlrelay && cargo check --all-targets
+    cd ../vlrelay/interop && cargo check --all-targets
     cd ../delta && cargo check --workspace --all-targets

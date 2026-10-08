@@ -61,7 +61,7 @@ impl Watermark {
     /// (unique among live nodes), so seqs are unique across logs.
     pub fn assign(&self) -> i64 {
         let mut w = self.inner.lock();
-        let now = seq_floor(vlsync_atproto::tid::now_micros()) | self.writer as i64;
+        let now = seq_floor(vlatproto::tid::now_micros()) | self.writer as i64;
         let seq = now.max(w.0 + 256);
         w.0 = seq;
         seq
@@ -81,8 +81,7 @@ impl Watermark {
         if w.0 > w.1 {
             return w.1;
         }
-        let v =
-            w.1.max(seq_floor(vlsync_atproto::tid::now_micros()) - 1).min(self.cap.load(Ordering::Acquire).max(w.1));
+        let v = w.1.max(seq_floor(vlatproto::tid::now_micros()) - 1).min(self.cap.load(Ordering::Acquire).max(w.1));
         if v > w.1 {
             // Idle: we advertise the clock. Record it, so a later seq can't land
             // at or below it if the wall clock steps back (assign() is
@@ -276,12 +275,12 @@ mod tests {
     #[test]
     fn idle_watermark_is_monotonic_across_clock_steps() {
         let writer = 9u8;
-        let wm = Watermark::new(writer, seq_floor(vlsync_atproto::tid::now_micros()));
+        let wm = Watermark::new(writer, seq_floor(vlatproto::tid::now_micros()));
         let advertised = wm.get();
         assert!(wm.idle());
-        vlsync_atproto::tid::set_test_skew_us(-5_000_000);
+        vlatproto::tid::set_test_skew_us(-5_000_000);
         let seq = wm.assign();
-        vlsync_atproto::tid::set_test_skew_us(0);
+        vlatproto::tid::set_test_skew_us(0);
         assert!(seq > advertised, "seq {seq} <= advertised watermark {advertised}");
         assert_eq!(seq & 0xff, writer as i64);
         assert!(!wm.idle());
@@ -289,16 +288,16 @@ mod tests {
         wm.set_durable(seq);
         assert!(wm.get() >= seq);
         // a log started with the clock ahead of its first seq keeps the writer byte
-        let wm = Watermark::new(writer, seq_floor(vlsync_atproto::tid::now_micros() + 1_000_000));
+        let wm = Watermark::new(writer, seq_floor(vlatproto::tid::now_micros() + 1_000_000));
         assert_eq!(wm.assign() & 0xff, writer as i64);
         // the bump keeps the writer byte under a lease cap that ends in 0x00
         let wm = Watermark::new(writer, 0);
-        wm.set_lease_expiry(vlsync_atproto::tid::now_micros() - 1_000_000);
+        wm.set_lease_expiry(vlatproto::tid::now_micros() - 1_000_000);
         let capped = wm.get();
         assert!(wm.idle());
-        vlsync_atproto::tid::set_test_skew_us(-60_000_000);
+        vlatproto::tid::set_test_skew_us(-60_000_000);
         let seq = wm.assign();
-        vlsync_atproto::tid::set_test_skew_us(0);
+        vlatproto::tid::set_test_skew_us(0);
         assert!(seq > capped && seq & 0xff == writer as i64);
     }
 }

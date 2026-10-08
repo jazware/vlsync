@@ -174,6 +174,12 @@ impl CrashHooks {
     }
 }
 
+impl Default for CrashHooks {
+    fn default() -> Self {
+        CrashHooks::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

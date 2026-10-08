@@ -4,6 +4,7 @@
 //! ([`plc`]), identifier syntax ([`syntax`]), DID resolution
 //! ([`did_resolver`]) over the shared outbound clients ([`http`]), and XRPC
 //! errors ([`xrpc`]).
+#![allow(clippy::type_complexity)]
 
 pub mod car;
 pub mod car_order;

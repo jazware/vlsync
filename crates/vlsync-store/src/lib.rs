@@ -4,6 +4,7 @@
 //! that gate it ([`version`]), slots and slot-major SlateDB keys ([`slots`],
 //! [`keys`]), and the process plumbing every vlsync server runs on
 //! ([`lifecycle`], [`metrics`], [`secret_file`]).
+#![allow(clippy::type_complexity)]
 
 pub mod keys;
 pub mod lifecycle;

@@ -42,8 +42,11 @@ publish = false
 # 9. DbCache::weighted_size/split_weighted_size (bytes held, block vs meta
 #    for SplitCache) and a real FoyerCache::entry_count, for
 #    slatedb_cache_bytes / slatedb_cache_entries.
+# 10. DbBuilder::build doesn't wait for the in-process compactor to start:
+#    its fencing runs after build returns (an open: ~21 -> 10 sequential
+#    object-store round trips).
 [dependencies]
 # zstd/lz4: SST block compression (vlpds --sst-compression, default zstd)
-slatedb = { git = "https://github.com/jazware/slatedb", rev = "87db9e3b3f5ba8d0473deb240990e33cb5e50208", features = ["aws", "wal_disable", "zstd", "lz4"] }
+slatedb = { git = "https://github.com/jazware/slatedb", rev = "08addd13a012741e3ada5bc78e83d5c2294f33e6", features = ["aws", "wal_disable", "zstd", "lz4"] }
 # the same rev, so slate-metrics' recorder and slatedb share one slatedb-common
-slatedb-common = { git = "https://github.com/jazware/slatedb", rev = "87db9e3b3f5ba8d0473deb240990e33cb5e50208" }
+slatedb-common = { git = "https://github.com/jazware/slatedb", rev = "08addd13a012741e3ada5bc78e83d5c2294f33e6" }

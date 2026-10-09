@@ -612,6 +612,75 @@ mod tests {
         (job.await.unwrap().unwrap(), got)
     }
 
+    /// A small cache and read-ahead hold what they're given: across every
+    /// log, the GETs in flight never total more than the read-ahead (or one
+    /// segment per log when it's smaller than that), and the cache never
+    /// keeps more than its size, at every step of a full replay.
+    #[tokio::test]
+    async fn small_cache_and_read_ahead_hold_their_limits() {
+        let store = Store::memory(None);
+        let (logs, segs, per_seg) = (["A", "B", "C"], 24u64, 8i64);
+        for (l, log) in logs.iter().enumerate() {
+            for ord in 0..segs {
+                let mut b = SegmentBuilder::new();
+                for j in 0..per_seg {
+                    let seq = 1_000_000 + (ord as i64 * per_seg + j) * 3 + l as i64;
+                    b.push(seq, vlsync_store::slots::ShardId(0), 1, |o| o.extend_from_slice(&[b'x'; 4096]), &[]);
+                }
+                let mut obj = b.header(log, ord);
+                obj.extend_from_slice(&b.body);
+                store.raw.put(&segment_path(&store, log, ord), PutPayload::from(obj)).await.unwrap();
+            }
+        }
+        let mut sizes = std::collections::BTreeSet::new();
+        for log in logs {
+            for ord in 0..segs {
+                let Fetched::Seg(s) = fetch(&store, log, ord).await.unwrap() else { panic!("{log}/{ord}") };
+                sizes.insert(s.bytes);
+            }
+        }
+        // equal sizes make the read-ahead's estimate exact
+        assert_eq!(sizes.len(), 1, "{sizes:?}");
+        let seg = *sizes.first().unwrap();
+        let total = logs.len() * (segs as usize) * per_seg as usize;
+
+        for (readahead, cache) in [(0, 0), (seg, 2 * seg), (3 * seg, 3 * seg), (12 * seg, 5 * seg + 1)] {
+            let r =
+                Reader { store: store.clone(), cache: SegCache::new(cache), readahead_bytes: readahead, shard: None };
+            let mut cursors: Vec<LogCursor> = logs.iter().map(|l| LogCursor::new(l.to_string(), 0)).collect();
+            let budget = readahead / cursors.len();
+            let (mut sent, mut most) = (0, 0);
+            loop {
+                let mut progressed = false;
+                for i in 0..cursors.len() {
+                    if cursors[i].advance(&r, budget, -1).await.unwrap().is_some() {
+                        cursors[i].pos += 1;
+                        sent += 1;
+                        progressed = true;
+                    }
+                    let in_flight: usize = cursors.iter().map(|c| c.ahead.len()).sum();
+                    most = most.max(in_flight);
+                    assert!(
+                        in_flight * seg <= readahead.max(cursors.len() * seg),
+                        "read-ahead {readahead}: {in_flight} segments of {seg} in flight"
+                    );
+                    assert!(r.cache.bytes() <= cache, "cache {cache}: holds {}", r.cache.bytes());
+                }
+                if !progressed {
+                    break;
+                }
+            }
+            assert_eq!(sent, total, "read-ahead {readahead}");
+            if readahead >= 12 * seg {
+                // the budget, not the one-segment floor, set the depth
+                assert!(most > cursors.len(), "read-ahead {readahead}: at most {most} in flight");
+            }
+            let (_, got) = collect(&r, -1, i64::MAX).await;
+            assert_eq!(got.len(), total);
+            assert!(r.cache.bytes() <= cache);
+        }
+    }
+
     /// Read-ahead across three logs: the merge is in seq order with
     /// duplicates (the same seq in two logs) sent once; a log stops at its
     /// first hole (B: segments past it, already in flight, are dropped) or

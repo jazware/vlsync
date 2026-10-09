@@ -17,6 +17,7 @@ earlier history is [jazware/vlpds](https://github.com/jazware/vlpds)'s
 | `vlsync-store` | The S3/R2 client with per-component request accounting, in-flight limits and throttle counts (`store`, `objstats`, `objlimit`, `throttle`, `store_stats`); the log segment format (`segment`) and the feature levels that gate it (`version`); slots and slot-major SlateDB keys (`slots`, `keys`); process lifecycle, the `/metrics` registry with process, tokio and jemalloc stats, secret files | vlpds, vlRelay, delta |
 | `vlsync-firehose` | A node log in the bucket as its readers see it (`log`: paths, headers, the gap-free prefix, `retain/` reports, writer seqs), the firehose that merges logs into one seq-ordered subscribeRepos stream, and cursor backfill from S3 | vlpds, vlRelay |
 | `slate-metrics` | SlateDB's metrics in Prometheus with a `db` label, and each database's LSM shape | vlpds, vlRelay |
+| `vlsync-heapprof` | Continuous jemalloc heap profiles: `malloc_conf!` starts the sampler (one allocation per 512 KiB) with the process, and `GET /debug/pprof/heap` (the `axum` feature) answers the heap in use as Go's pprof, symbolized in process | vlpds, vlRelay, delta |
 | `vlsync-slatedb` | The SlateDB fork rev every user builds against, in one place | all of the above |
 
 ## Using a crate
@@ -48,6 +49,9 @@ Features:
   binary whose global allocator is jemalloc.
 - `vlsync-store/test-level`: TEST ONLY, the test feature level (a different segment magic and
   header), for rolling-upgrade tests.
+- `vlsync-heapprof/axum`: `handler()` for `GET /debug/pprof/heap` and `from_loopback()`, the
+  check that a request came from this host and no proxy. Depending on the crate at all builds
+  the binary's jemalloc with profiling, which costs nothing until `malloc_conf!` turns it on.
 
 Metric names keep their `vlpds_` prefix: dashboards and alerts of all three
 read them.

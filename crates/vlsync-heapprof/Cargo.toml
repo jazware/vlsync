@@ -1,0 +1,29 @@
+[package]
+name = "vlsync-heapprof"
+version = "0.1.0"
+edition = "2021"
+description = "Continuous jemalloc heap profiles in Go's pprof format: sampling on from the start, an in-use dump symbolized in process, for GET /debug/pprof/heap"
+license = "MIT"
+publish = false
+
+[features]
+# `handler()`, an axum handler for GET /debug/pprof/heap
+axum = ["dep:axum", "dep:tokio"]
+
+[dependencies]
+# jemalloc built with --enable-prof for every user of this jemalloc in the
+# binary: the sampler costs nothing until malloc_conf turns it on.
+tikv-jemalloc-sys = { version = "0.7", default-features = false, features = ["profiling"] }
+tikv-jemalloc-ctl = { version = "0.7", default-features = false, features = ["use_std"] }
+# symbolizes the dump's addresses in process, from the binary's symbol table
+# (and its DWARF line tables when it has them)
+backtrace = "0.3"
+flate2 = "1"
+parking_lot = "0.12"
+tracing = "0.1"
+axum = { version = "0.8", default-features = false, features = ["tokio"], optional = true }
+tokio = { version = "1", default-features = false, features = ["rt"], optional = true }
+
+[dev-dependencies]
+tikv-jemallocator = "0.7"
+flate2 = "1"

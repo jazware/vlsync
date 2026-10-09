@@ -387,9 +387,11 @@ impl LogCursor {
     }
 
     /// Keeps GETs in flight: at least one, then while the in-flight bytes
-    /// (estimated from the sizes seen so far) fit in `budget`.
+    /// (estimated from the sizes seen so far) fit in `budget`. Until a
+    /// segment has been read there's no estimate, so just the one: a relay's
+    /// segments run to tens of MB, and `MAX_AHEAD` of them is gigabytes.
     fn top_up(&mut self, r: &Reader, budget: usize) {
-        let avg = (self.read_bytes / self.reads.max(1)).max(1);
+        let avg = self.read_bytes.checked_div(self.reads).unwrap_or(budget).max(1);
         while !self.end
             && self.ahead.len() < MAX_AHEAD
             && (self.ahead.is_empty() || (self.ahead.len() + 1) * avg <= budget)
@@ -529,6 +531,21 @@ mod tests {
         // the same log still open (3 in flight, not fenced): 3 is where readers stop
         store.raw.delete(&segment_path(&store, "A", 3)).await.unwrap();
         assert_eq!(seek(&store, "A", 1004).await.unwrap(), 3);
+    }
+
+    /// The first top-up, with no segment sizes seen yet, asks for one; once
+    /// sizes are known it fills the budget.
+    #[tokio::test]
+    async fn read_ahead_waits_for_a_size_before_filling_the_budget() {
+        let store = Store::memory(None);
+        let r = Reader::new(store);
+        let mut c = LogCursor::new("A".into(), 0);
+        c.top_up(&r, 64 << 20);
+        assert_eq!(c.ahead.len(), 1);
+        c.reads = 1;
+        c.read_bytes = 8 << 20;
+        c.top_up(&r, 64 << 20);
+        assert_eq!(c.ahead.len(), 8);
     }
 
     /// A log whose first segments were pruned is still found and read.

@@ -6,7 +6,8 @@
 //! `client` is the connection pool (`log`, `state`, `ctl`). `result` is
 //! `ok`, `not_found`, `precondition`, `timeout`, `error`, or `cancelled`
 //! (dropped unanswered: a deadline, a lost hedge). `list` counts one request
-//! per 1,000-key page; `delete_batch` one per 1,000 objects of a stream.
+//! per 1,000-key page; `delete` one per object (the S3 client sends single
+//! DELETEs, never a DeleteObjects POST: see `Store::s3_builder`).
 //!
 //! `VLPDS_INJECT_{STATE,LOG,CTL}_MS` (bench only) add S3-like latency; see
 //! `Latency`.
@@ -354,24 +355,16 @@ impl ObjectStore for Counting {
         Ok(r)
     }
 
-    /// `delete_batch` is counted `ok` when sent: a bulk request's outcome is
-    /// per object.
     fn delete_stream(&self, locations: BoxStream<'static, Result<Path>>) -> BoxStream<'static, Result<Path>> {
         let (prefix, client) = (self.prefix.clone(), self.client);
         let (stats, start) = (self.stats.clone(), crate::store_stats::now_us());
         // an error may not name its key: count it under the last one sent
         let last = Arc::new(parking_lot::Mutex::new("other"));
         let sent = last.clone();
-        let mut n = 0u64;
         let locations = locations
             .inspect(move |p| {
                 if let Ok(p) = p {
-                    let comp = component(&prefix, p.as_ref());
-                    *sent.lock() = comp;
-                    if n.is_multiple_of(1000) {
-                        count("delete_batch", comp, client, "ok");
-                    }
-                    n += 1;
+                    *sent.lock() = component(&prefix, p.as_ref());
                 }
             })
             .boxed();

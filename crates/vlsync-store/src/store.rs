@@ -86,6 +86,11 @@ impl Store {
             .with_secret_access_key(&cfg.secret_key)
             .with_region(&cfg.region)
             .with_virtual_hosted_style_request(false)
+            // object_store sends every delete, even `delete()` of one key,
+            // as a DeleteObjects POST, which R2 bills as Class A; a plain
+            // DELETE is free. SlateDB's GC and retention delete one or a
+            // few keys at a time, so the bulk call saved nothing.
+            .with_disable_bulk_delete(true)
             .with_client_options(
                 // h2 to S3 is slower and S3 caps streams per connection. S3
                 // closes idle connections after ~20 s; dropping ours at 15 s
@@ -136,5 +141,46 @@ impl Store {
                 tokio::time::sleep(d).await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+    use object_store::path::Path;
+    use object_store::ObjectStoreExt;
+
+    /// Every delete reaches the bucket as a single DELETE, never a
+    /// DeleteObjects POST (R2's Class A).
+    #[tokio::test]
+    async fn deletes_are_single_deletes() {
+        let seen: Arc<parking_lot::Mutex<Vec<(String, String)>>> = Default::default();
+        let log = seen.clone();
+        let app = axum::Router::new().fallback(move |req: axum::extract::Request| {
+            let log = log.clone();
+            async move {
+                log.lock().push((req.method().to_string(), req.uri().to_string()));
+                axum::http::StatusCode::NO_CONTENT
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let cfg = S3Config {
+            endpoint: format!("http://{addr}"),
+            bucket: "b".into(),
+            access_key: "k".into(),
+            secret_key: "s".into(),
+            region: "auto".into(),
+        };
+        let store = Store::s3(&cfg, "p", None, 4).unwrap();
+        store.raw.delete(&Path::from("p/state/manifest/1.manifest")).await.unwrap();
+        let keys: Vec<_> = (0..3).map(|i| Ok(Path::from(format!("p/log/{i}.seg")))).collect();
+        let done: Vec<_> = store.raw.delete_stream(futures::stream::iter(keys).boxed()).collect().await;
+        assert!(done.iter().all(|r| r.is_ok()), "{done:?}");
+        let seen = seen.lock().clone();
+        assert_eq!(seen.len(), 4, "{seen:?}");
+        assert!(seen.iter().all(|(m, u)| m == "DELETE" && !u.contains("?delete")), "{seen:?}");
     }
 }

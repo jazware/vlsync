@@ -146,16 +146,19 @@ pub fn dump_pprof() -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
+/// jemalloc opens the dump's path with O_TRUNC and follows symlinks, so the
+/// dump goes in a directory of its own (mkdtemp, mode 0700) where nobody
+/// else can plant one. Dropping `dir` removes both.
 fn dump_text() -> Result<String, Error> {
-    let path = std::env::temp_dir().join(format!("vlsync-heapprof-{}.heap", std::process::id()));
+    let dir = tempfile::Builder::new()
+        .prefix("vlsync-heapprof-")
+        .tempdir()
+        .map_err(|e| Error::Dump(format!("a temp dir for the dump: {e}")))?;
+    let path = dir.path().join("heap");
     let c = CString::new(path.as_os_str().as_encoded_bytes()).map_err(|e| Error::Dump(e.to_string()))?;
     // SAFETY: prof.dump takes a NUL-terminated file name, which outlives the call.
-    let r = unsafe { raw::write(b"prof.dump\0", c.as_ptr()) };
-    let text = r
-        .map_err(|e| Error::Dump(format!("prof.dump to {}: {e}", path.display())))
-        .and_then(|()| std::fs::read_to_string(&path).map_err(|e| Error::Dump(format!("{}: {e}", path.display()))));
-    let _ = std::fs::remove_file(&path);
-    text
+    unsafe { raw::write(b"prof.dump\0", c.as_ptr()) }.map_err(|e| Error::Dump(format!("prof.dump: {e}")))?;
+    std::fs::read_to_string(&path).map_err(|e| Error::Dump(format!("reading the dump: {e}")))
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -186,7 +189,7 @@ fn parse(text: &str) -> Result<Heap, Error> {
         .strip_prefix("heap_v2/")
         .and_then(|r| r.parse().ok())
         .filter(|r| *r > 0)
-        .ok_or_else(|| Error::Dump(format!("not a heap_v2 dump: {first:?}")))?;
+        .ok_or_else(|| Error::Dump("not a heap_v2 dump".into()))?;
     let rate = sample_bytes as f64;
     let mut heap = Heap { sample_bytes, ..Default::default() };
     let mut cur: Option<Vec<u64>> = None;
@@ -204,7 +207,7 @@ fn parse(text: &str) -> Result<Heap, Error> {
                 .split_ascii_whitespace()
                 .map(|w| u64::from_str_radix(w.trim_start_matches("0x"), 16))
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| Error::Dump(format!("stack {l:?}: {e}")))?;
+                .map_err(|e| Error::Dump(format!("a stack address: {e}")))?;
             cur = Some(addrs);
         } else if let Some(rest) = l.strip_prefix("t*:") {
             let Some(addrs) = cur.take() else { continue };

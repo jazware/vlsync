@@ -20,6 +20,8 @@ tikv-jemalloc-ctl = { version = "0.7", default-features = false, features = ["us
 backtrace = "0.3"
 flate2 = "1"
 parking_lot = "0.12"
+# the dump's private directory (jemalloc opens its path with O_TRUNC)
+tempfile = "3"
 tracing = "0.1"
 axum = { version = "0.8", default-features = false, features = ["tokio"], optional = true }
 tokio = { version = "1", default-features = false, features = ["rt"], optional = true }

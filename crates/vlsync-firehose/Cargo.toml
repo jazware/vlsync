@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 vlsync-store = { path = "../vlsync-store" }
-vlatproto = { git = "https://github.com/jazware/vlatproto", rev = "5dae8a125869cfb5876bb6a3f36258ae0460aa3a" }
+vlatproto = { git = "https://github.com/jazware/vlatproto", rev = "a63ca3b1249ec331414836f525fe643e7b19c6d3" }
 anyhow = "1"
 axum = { version = "0.8", features = ["ws", "macros", "http2"] }
 bytes = "1"
@@ -26,5 +26,5 @@ tokio-tungstenite = { version = "0.29", features = ["__rustls-tls"] }
 tracing = "0.1"
 
 [dev-dependencies]
-vlatproto = { git = "https://github.com/jazware/vlatproto", rev = "5dae8a125869cfb5876bb6a3f36258ae0460aa3a", features = ["test-clock"] }
+vlatproto = { git = "https://github.com/jazware/vlatproto", rev = "a63ca3b1249ec331414836f525fe643e7b19c6d3", features = ["test-clock"] }
 sha2 = "0.11"

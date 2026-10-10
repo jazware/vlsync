@@ -10,7 +10,8 @@ members = ["crates/*"]
 [profile.test]
 opt-level = 1
 debug = 0
-lto = false
+# false still runs thin LTO across each crate's codegen units
+lto = "off"
 codegen-units = 256
 incremental = true
 

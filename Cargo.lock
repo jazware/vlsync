@@ -3097,7 +3097,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vlatproto"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlatproto?rev=186c75bfd8b10e800f08586cbb69804e709d6ce1#186c75bfd8b10e800f08586cbb69804e709d6ce1"
+source = "git+https://github.com/jazware/vlatproto?rev=5dae8a125869cfb5876bb6a3f36258ae0460aa3a#5dae8a125869cfb5876bb6a3f36258ae0460aa3a"
 dependencies = [
  "anyhow",
  "axum",

@@ -1,6 +1,6 @@
 use super::*;
 use crate::chaos::ChaosStore;
-use crate::lease::{Holder, LeaseConfig, Observer};
+use crate::lease::{Holder, LeaseConfig, Membership, Observer};
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -271,6 +271,30 @@ async fn unknown_fields_survive_a_cas() {
     t.set_replicas(S, |r| r.push(a.clone())).await.unwrap().unwrap();
     let back: serde_json::Value = cas::read(&s, &rel(S)).await.unwrap().unwrap().value;
     assert_eq!(back["future"]["x"], 1);
+}
+
+/// A release that landed with its answer lost, whose read-back then
+/// failed: its outcome is unknown, so the cache stops calling the range
+/// ours. The chaos sim found an owner resuming on that stale entry and
+/// writing past a handoff nobody fenced.
+#[tokio::test(start_paused = true)]
+async fn an_op_with_an_unknown_outcome_forgets_the_record() {
+    let mem = shared();
+    let (s, c) = client(&mem, 1);
+    let t = Table::new(s.clone());
+    let (_ha, a) = node(&s, "a", "a1").await;
+    let (_hb, b) = node(&s, "b", "b1").await;
+    t.create(S, 0, Some(&a)).await.unwrap();
+    assert_eq!(t.owned_by(&a).len(), 1);
+    // the PUT lands and answers a conflict, and the read-back fails
+    c.knobs().landed_next(1);
+    c.knobs().fail_gets_next(1);
+    assert!(t.release(S, &a, 10, Some(&b)).await.is_err());
+    assert!(t.owned_by(&a).is_empty() && t.cached(S).is_none());
+    let stored = cas::read::<Assignment>(&s, &rel(S)).await.unwrap().unwrap().value;
+    assert_eq!(stored.owner.as_ref().unwrap().node_id, "b", "it landed either way");
+    t.refresh().await.unwrap();
+    assert!(t.owned_by(&a).is_empty() && t.owned_by(&b).len() == 1);
 }
 
 mod sim;

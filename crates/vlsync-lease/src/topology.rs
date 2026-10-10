@@ -9,8 +9,9 @@
 //! router's copy is still only a hint: an owner refuses a request for a
 //! range it no longer holds, and the router reads again.
 
+use crate::alive::Alive;
 use crate::cas::{self, Expect, Versioned};
-use crate::lease::{LeaseBody, Liveness, Membership};
+use crate::lease::Liveness;
 use crate::table::{Assignment, Member};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -102,21 +103,18 @@ impl Topology {
     }
 
     /// Who can serve a read of `shard` that must reflect position `min`:
-    /// the owner and replicas whose leases are up and whose published
-    /// position for the range is at least `min`, owner first. `min = 0`
-    /// takes any of them.
-    pub fn readable<T: LeaseBody>(&self, shard: ShardId, min: u64, members: &Membership<T>) -> Vec<Member> {
+    /// the owner and replicas that `alive` knows are up and whose published
+    /// position for the range (in their lease, or their beats) is at least
+    /// `min`, owner first. `min = 0` takes any of them.
+    pub fn readable<A: Alive + ?Sized>(&self, shard: ShardId, min: u64, alive: &A) -> Vec<Member> {
         let Some(r) = self.range(shard) else { return Vec::new() };
         let key = shard.key();
         r.owner
             .iter()
             .chain(r.replicas.iter())
             .filter(|m| {
-                members.get(&m.node_id).is_some_and(|(l, v)| {
-                    *v != Liveness::Dead
-                        && l.incarnation == m.incarnation
-                        && (min == 0 || l.positions.get(&key).is_some_and(|p| *p >= min))
-                })
+                alive.verdict(&m.node_id, &m.incarnation).is_some_and(|h| h.liveness != Liveness::Dead)
+                    && (min == 0 || alive.position(&m.node_id, &m.incarnation, &key).is_some_and(|p| p >= min))
             })
             .cloned()
             .collect()

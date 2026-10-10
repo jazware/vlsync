@@ -34,6 +34,7 @@ pub struct Knobs {
     pub lost_rate: Mutex<f64>,
     fail: AtomicU32,
     landed: AtomicU32,
+    fail_gets: AtomicU32,
     paused: watch::Sender<bool>,
     /// Faults injected so far.
     pub injected: AtomicU64,
@@ -48,6 +49,11 @@ impl Knobs {
     /// The next `n` PUTs land and answer a conflict.
     pub fn landed_next(&self, n: u32) {
         self.landed.store(n, Ordering::SeqCst);
+    }
+
+    /// The next `n` GETs fail.
+    pub fn fail_gets_next(&self, n: u32) {
+        self.fail_gets.store(n, Ordering::SeqCst);
     }
 
     pub fn set(&self, latency: Duration, error_rate: f64, lost_rate: f64) {
@@ -130,6 +136,7 @@ impl ChaosStore {
             lost_rate: Mutex::new(0.0),
             fail: AtomicU32::new(0),
             landed: AtomicU32::new(0),
+            fail_gets: AtomicU32::new(0),
             paused: watch::channel(false).0,
             injected: AtomicU64::new(0),
         };
@@ -181,6 +188,10 @@ impl ObjectStore for ChaosStore {
 
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
         self.knobs.before().await?;
+        if Knobs::take(&self.knobs.fail_gets) {
+            self.knobs.injected.fetch_add(1, Ordering::Relaxed);
+            return Err(object_store::Error::Generic { store: "chaos", source: "injected 503".into() });
+        }
         self.inner.get_opts(location, options).await
     }
 

@@ -2,7 +2,7 @@
 name = "vlsync-lease"
 version = "0.1.0"
 edition = "2021"
-description = "Ownership through the bucket: typed CAS on JSON objects, epoch records and their fences, node leases judged on local monotonic time, and an assignment table over slot ranges with spans, replicas and a published topology"
+description = "Ownership with safety in the bucket and pluggable liveness: typed CAS on JSON objects, epoch records and their fences, an assignment table over slot ranges with spans, replicas and a published topology, and liveness by bucket leases or peer heartbeats"
 license = "MIT"
 publish = false
 
@@ -15,6 +15,7 @@ chaos = ["dep:rand"]
 vlsync-store = { path = "../vlsync-store" }
 anyhow = "1"
 async-trait = "0.1"
+bytes = "1"
 futures = "0.3"
 object_store = { version = "0.14", features = ["aws"] }
 parking_lot = "0.12"

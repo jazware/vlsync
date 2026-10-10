@@ -22,9 +22,10 @@
 //! decided. Their progress rides on their own node leases (`positions`),
 //! which are renewed anyway, so a replica's watermark costs no writes here.
 
+use crate::alive::Alive;
 use crate::cas::{self, Expect, Updated, Versioned};
 use crate::epoch::Epoched;
-use crate::lease::{self, LeaseBody, Liveness, Membership, NodeLease};
+use crate::lease::{Liveness, NodeLease};
 use crate::topology::Topology;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -188,6 +189,8 @@ impl Assignment {
 /// What [`Table::acquire`] did.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Acquired {
+    /// This node may not write (no lease, or no quorum): it takes nothing.
+    Unable,
     /// Ours now, at its epoch; the span to write is its open one.
     Taken(Assignment),
     /// Already ours.
@@ -329,7 +332,8 @@ impl Table {
         f: impl FnMut(Option<&Assignment>) -> Option<Assignment>,
     ) -> anyhow::Result<Option<Assignment>> {
         let start = self.cached(shard).map(Some);
-        match cas::update(&self.store, &rel(shard), start, ATTEMPTS, f).await? {
+        let r = cas::update(&self.store, &rel(shard), start, ATTEMPTS, f).await;
+        match self.unless_failed(shard, r)? {
             Updated::Written(v) => {
                 let a = v.value.clone();
                 self.put_cache(shard, Some(v));
@@ -342,6 +346,19 @@ impl Table {
                 Ok(None)
             }
         }
+    }
+
+    /// An op that failed may still have landed (a write whose answer was
+    /// lost, then a failed read-back): the cached record is unknown now, so
+    /// it's dropped and [`Table::owned_by`] stops naming it until a read.
+    /// An owner that resumed writing on the strength of the old cache could
+    /// write past a release that did land, into a span nobody fenced.
+    fn unless_failed<T>(&self, shard: ShardId, r: anyhow::Result<T>) -> anyhow::Result<T> {
+        if r.is_err() {
+            self.cache.lock().remove(&shard);
+            self.publish_local();
+        }
+        r
     }
 
     /// Creates a range's record if it has none: positions up to `floor` are
@@ -363,8 +380,8 @@ impl Table {
                 Ok(Some(a))
             }
             Err(e) if cas::moved(&e) => {
-                let cur = self.read(shard).await?;
-                Ok(cur.filter(|v| v.value == a).map(|v| v.value))
+                let cur = self.read(shard).await;
+                Ok(self.unless_failed(shard, cur)?.filter(|v| v.value == a).map(|v| v.value))
             }
             Err(e) => Err(e.into()),
         }
@@ -377,15 +394,25 @@ impl Table {
     /// starts right after. The fence must leave that incarnation unable to
     /// make anything past it durable (a create-only fence object at the end
     /// of its stream, say), since it may still be running.
-    pub async fn acquire<T, F, Fut>(
+    pub async fn acquire<A, F, Fut>(&self, shard: ShardId, me: &Member, alive: &A, fence: F) -> anyhow::Result<Acquired>
+    where
+        A: Alive + ?Sized,
+        F: FnMut(Span) -> Fut,
+        Fut: Future<Output = anyhow::Result<u64>>,
+    {
+        let r = self.try_acquire(shard, me, alive, fence).await;
+        self.unless_failed(shard, r)
+    }
+
+    async fn try_acquire<A, F, Fut>(
         &self,
         shard: ShardId,
         me: &Member,
-        members: &Membership<T>,
+        alive: &A,
         mut fence: F,
     ) -> anyhow::Result<Acquired>
     where
-        T: LeaseBody,
+        A: Alive + ?Sized,
         F: FnMut(Span) -> Fut,
         Fut: Future<Output = anyhow::Result<u64>>,
     {
@@ -394,6 +421,9 @@ impl Table {
             None => self.read(shard).await?,
         };
         for _ in 0..ATTEMPTS {
+            if !alive.may_write() {
+                return Ok(Acquired::Unable);
+            }
             let Some(read) = cur.clone() else { return Ok(Acquired::Missing) };
             let a = &read.value;
             if a.frozen.is_some() {
@@ -404,7 +434,7 @@ impl Table {
             }
             let mut next = a.clone();
             if let Some(o) = &a.owner {
-                if self.owner_up(o, members).await? {
+                if self.owner_up(o, alive).await? {
                     return Ok(Acquired::Busy(o.clone()));
                 }
                 let open = a.open_span().cloned().ok_or_else(|| anyhow::anyhow!("{shard}: owner without a span"))?;
@@ -432,20 +462,14 @@ impl Table {
         anyhow::bail!("{shard}: still contended after {ATTEMPTS} acquire attempts")
     }
 
-    /// Whether `o` may still be acting. A listing can predate a lease
-    /// (a node that joined since, or restarted under the same id), so
-    /// anything other than a plain verdict on `o`'s own incarnation is
-    /// checked against a fresh read of its lease.
-    async fn owner_up<T: LeaseBody>(&self, o: &Member, members: &Membership<T>) -> anyhow::Result<bool> {
-        match members.incarnation(&o.node_id, &o.incarnation) {
-            Some(Liveness::Live | Liveness::Suspect) => return Ok(true),
-            Some(Liveness::Dead) if members.get(&o.node_id).is_some_and(|(l, _)| l.incarnation == o.incarnation) => {
-                return Ok(false);
-            }
-            _ => {}
+    /// Whether `o` may still be acting. A source that doesn't know `o`'s
+    /// incarnation (a listing that predates its lease, a restart under the
+    /// same id) is asked to confirm.
+    async fn owner_up<A: Alive + ?Sized>(&self, o: &Member, alive: &A) -> anyhow::Result<bool> {
+        match alive.verdict(&o.node_id, &o.incarnation) {
+            Some(h) => Ok(h.liveness != Liveness::Dead),
+            None => alive.confirm_up(&self.store, &o.node_id, &o.incarnation).await,
         }
-        let fresh = cas::read::<NodeLease<T>>(&self.store, &lease::rel(&o.node_id)).await?;
-        Ok(fresh.is_some_and(|l| l.value.incarnation == o.incarnation && !l.value.ended))
     }
 
     /// `me` stops writing at `end` (every position up to it is durable,

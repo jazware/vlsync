@@ -484,11 +484,13 @@ struct Seen<T> {
 #[derive(Clone, Debug)]
 pub struct Membership<T> {
     pub leases: BTreeMap<String, (NodeLease<T>, Liveness)>,
+    /// When each lease's current version was first seen (our clock).
+    pub heard: BTreeMap<String, Instant>,
 }
 
 impl<T> Default for Membership<T> {
     fn default() -> Self {
-        Membership { leases: BTreeMap::new() }
+        Membership { leases: BTreeMap::new(), heard: BTreeMap::new() }
     }
 }
 
@@ -590,6 +592,7 @@ impl<T: LeaseBody> Observer<T> {
     /// The verdicts as of `now` from what was last observed.
     pub fn classify_at(&self, now: Instant) -> Membership<T> {
         let seen = self.seen.lock();
+        let heard = seen.iter().map(|(id, s)| (id.clone(), s.changed_at)).collect();
         let leases = seen
             .iter()
             .map(|(id, s)| {
@@ -604,7 +607,7 @@ impl<T: LeaseBody> Observer<T> {
                 (id.clone(), (s.lease.clone(), v))
             })
             .collect();
-        Membership { leases }
+        Membership { leases, heard }
     }
 
     /// Marks a dead incarnation's lease ended, by CAS on the version we

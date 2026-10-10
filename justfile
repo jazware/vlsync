@@ -6,6 +6,7 @@ check:
     cargo check --workspace --all-targets
     cargo check -p vlsync-store --features jemalloc,test-level
     cargo check -p vlsync-heapprof --all-features --all-targets
+    cargo check -p vlsync-lease --features chaos
 
 test *args:
     cargo test --workspace {{args}}

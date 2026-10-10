@@ -3163,6 +3163,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "vlsync-lease"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures",
+ "object_store",
+ "parking_lot",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "vlsync-store",
+]
+
+[[package]]
 name = "vlsync-slatedb"
 version = "0.1.0"
 dependencies = [

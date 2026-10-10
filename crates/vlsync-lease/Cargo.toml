@@ -1,0 +1,29 @@
+[package]
+name = "vlsync-lease"
+version = "0.1.0"
+edition = "2021"
+description = "Ownership through the bucket: typed CAS on JSON objects, epoch records and their fences, node leases judged on local monotonic time, and an assignment table over slot ranges with spans, replicas and a published topology"
+license = "MIT"
+publish = false
+
+[features]
+# `chaos::ChaosStore`, an object store that injects latency, errors and
+# lost answers, for users' own tests
+chaos = ["dep:rand"]
+
+[dependencies]
+vlsync-store = { path = "../vlsync-store" }
+anyhow = "1"
+async-trait = "0.1"
+futures = "0.3"
+object_store = { version = "0.14", features = ["aws"] }
+parking_lot = "0.12"
+rand = { version = "0.8", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+
+[dev-dependencies]
+rand = "0.8"
+tokio = { version = "1", features = ["full", "test-util"] }

@@ -67,7 +67,19 @@ const BACKFILL_DOC: &str = "stats/backfill";
 /// Components that overwrite their own keys: an overwrite of a key the node
 /// hasn't seen is more likely a replace than a create.
 fn overwrites_in_place(comp: &str) -> bool {
-    comp.starts_with("ctl_") || matches!(comp, "retention_report" | "state_gc_boundary" | "state_other" | "other")
+    comp.starts_with("ctl_")
+        || matches!(
+            comp,
+            "retention_report"
+                | "state_gc_boundary"
+                | "state_other"
+                | "plc_seeds_gc_boundary"
+                | "plc_seeds_other"
+                | "plc_checkpoint"
+                | "discovery_state"
+                | "policy"
+                | "other"
+        )
 }
 
 pub fn now_us() -> u64 {

@@ -40,8 +40,27 @@ pub fn component(prefix: &str, path: &str) -> &'static str {
             "manifest" => "qlog_manifest",
             "leader" => "qlog_leader",
             s if s.starts_with("state") => state_component(it.next().unwrap_or("")),
+            // a LIST of the whole tree (bucket retention's look for old state paths)
+            "" => "qlog",
             _ => "other",
         },
+        // vlrelay's PLC seeds: a SlateDB of their own at `plc/seeds`, and
+        // the export's cursors beside it
+        "plc" => match it.next().unwrap_or("") {
+            "seeds" => match state_component(it.next().unwrap_or("")) {
+                "state_manifest" => "plc_seeds_manifest",
+                "state_sst" => "plc_seeds_sst",
+                "state_wal" => "plc_seeds_wal",
+                "state_compactions" => "plc_seeds_compactions",
+                "state_gc_boundary" => "plc_seeds_gc_boundary",
+                _ => "plc_seeds_other",
+            },
+            "export-checkpoint.json" => "plc_checkpoint",
+            _ => "other",
+        },
+        // vlrelay's host discovery and moderation policy
+        "discovery" => "discovery_state",
+        "policy" => "policy",
         "state" => {
             let _shard = it.next();
             state_component(it.next().unwrap_or(""))
@@ -479,6 +498,16 @@ mod tests {
         assert_eq!(component("r", "r/qlog/state/compacted/01J.sst"), "state_sst");
         assert_eq!(component("r", "r/qlog/state-e7/manifest/00000000000000000001.manifest"), "state_manifest");
         assert_eq!(component("r", "r/log/qlog/000000000003.seg"), "log_segment");
+        assert_eq!(component("r", "r/qlog"), "qlog");
+        assert_eq!(component("r", "r/plc/seeds/manifest/00000000000000000001.manifest"), "plc_seeds_manifest");
+        assert_eq!(component("r", "r/plc/seeds/compacted/01J.sst"), "plc_seeds_sst");
+        assert_eq!(component("r", "r/plc/seeds/compactions/00000000000000000001.compactions"), "plc_seeds_compactions");
+        assert_eq!(component("r", "r/plc/seeds/gc/manifest.boundary"), "plc_seeds_gc_boundary");
+        assert_eq!(component("r", "r/plc/seeds/wal/00000000000000000001.sst"), "plc_seeds_wal");
+        assert_eq!(component("r", "r/plc/seeds"), "plc_seeds_other");
+        assert_eq!(component("r", "r/plc/export-checkpoint.json"), "plc_checkpoint");
+        assert_eq!(component("r", "r/discovery/state.json"), "discovery_state");
+        assert_eq!(component("r", "r/policy/current.json"), "policy");
     }
 
     fn n(op: &str, comp: &str, result: &str) -> u64 {

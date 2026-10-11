@@ -87,12 +87,15 @@ const MAX_SEEK_RETRIES: u32 = 16;
 
 async fn seek_once(store: &Store, log_id: &str, after: i64) -> anyhow::Result<Option<u64>> {
     let o = seek(store, log_id, after).await?;
-    if seg_header(store, log_id, o).await?.is_some() {
-        return Ok(Some(o));
-    }
-    match pruned_at(store, log_id, o).await? {
-        Some(p) => Err(p.into()),
-        None => Ok(None),
+    match read_head(store, log_id, o).await? {
+        Head::Segment(_) => Ok(Some(o)),
+        // the end, and an object retention didn't make (no LIST needed: a
+        // retired log is just its fence, and every backfill seeks it)
+        Head::Fence => Ok(None),
+        Head::Missing => match pruned_at(store, log_id, o).await? {
+            Some(p) => Err(p.into()),
+            None => Ok(None),
+        },
     }
 }
 

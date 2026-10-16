@@ -482,6 +482,13 @@ async fn run(seed: u64, mode: Mode, fence: bool) -> Outcome {
     out.takeovers = w.takeovers.load(Ordering::Relaxed);
     out.rogue_writes = w.rogue_writes.load(Ordering::Relaxed);
     let (check, _) = client(&mem, 0);
+    let mut owned: HashMap<String, u64> = HashMap::new();
+    for s in shards() {
+        let a = cas::read::<Assignment>(&check, &rel(s)).await.unwrap().unwrap().value;
+        if let Some(o) = &a.owner {
+            *owned.entry(o.incarnation.clone()).or_default() += 1;
+        }
+    }
     for s in shards() {
         let a = cas::read::<Assignment>(&check, &rel(s)).await.unwrap().unwrap().value;
         let mut decided = HashSet::new();
@@ -523,7 +530,15 @@ async fn run(seed: u64, mode: Mode, fence: bool) -> Outcome {
             format!("{}-{}", slot.id, slot.gen),
             "seed {seed} {mode:?} {s}: owned by a dead incarnation"
         );
-        assert!(decided.len() as u64 + 20 >= head, "seed {seed} {mode:?} {s}: stalled at {} of {head}", decided.len());
+        // A healthy owner writes up to the head it saw when its round began,
+        // and a round is a STEP plus up to 40 ms per range it holds (the
+        // segment-PUT stall), so a node left holding every range after the
+        // storm trails the head by more ticks than a fair share does. A
+        // stalled range trails by hundreds.
+        let held = owned[&o.incarnation];
+        let round = STEP + Duration::from_millis(40) * held as u32;
+        let slack = 5 * (round.as_millis().div_ceil(STEP.as_millis()) as u64 + 1).max(4);
+        assert!(decided.len() as u64 + slack >= head, "seed {seed} {mode:?} {s}: stalled at {} of {head}", decided.len());
     }
     let injected: u64 = slots.iter().map(|s| s.chaos.knobs().injected.load(Ordering::Relaxed)).sum();
     eprintln!("seed {seed} {mode:?} fence={fence}: {out:?}, {injected} injected faults, head {head}");

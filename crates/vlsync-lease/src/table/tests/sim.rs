@@ -538,7 +538,11 @@ async fn run(seed: u64, mode: Mode, fence: bool) -> Outcome {
         let held = owned[&o.incarnation];
         let round = STEP + Duration::from_millis(40) * held as u32;
         let slack = 5 * (round.as_millis().div_ceil(STEP.as_millis()) as u64 + 1).max(4);
-        assert!(decided.len() as u64 + slack >= head, "seed {seed} {mode:?} {s}: stalled at {} of {head}", decided.len());
+        assert!(
+            decided.len() as u64 + slack >= head,
+            "seed {seed} {mode:?} {s}: stalled at {} of {head}",
+            decided.len()
+        );
     }
     let injected: u64 = slots.iter().map(|s| s.chaos.knobs().injected.load(Ordering::Relaxed)).sum();
     eprintln!("seed {seed} {mode:?} fence={fence}: {out:?}, {injected} injected faults, head {head}");

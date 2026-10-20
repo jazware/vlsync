@@ -31,7 +31,21 @@ const BASELINE: Level = Level {
     segment_magic: Some(b"VLSEG06\n"),
 };
 
-pub const REAL_MAX: u32 = 1;
+/// vlpds's third-party sign-in: nothing of
+/// it is offered or written below this level, so no build without it ever
+/// sees its rows.
+const FEDERATED_SIGN_IN: Level = Level {
+    level: 2,
+    name: "federated-sign-in",
+    description: "third-party sign-in: fedid/ claim objects, p/{did}\\0fedid and oauth:fed: state rows, \
+                  fed: credential references on sessions and devices",
+    persistent: true,
+    segment_magic: None,
+};
+
+pub const FEDERATED_SIGN_IN_LEVEL: u32 = FEDERATED_SIGN_IN.level;
+
+pub const REAL_MAX: u32 = 2;
 
 /// Compiled in only with the `test-level` cargo feature (never a release
 /// image). It changes two on-bucket formats the way a real level would
@@ -54,9 +68,9 @@ const TEST: Level = Level {
 
 /// Oldest first.
 #[cfg(not(feature = "test-level"))]
-pub const LEVELS: &[Level] = &[BASELINE];
+pub const LEVELS: &[Level] = &[BASELINE, FEDERATED_SIGN_IN];
 #[cfg(feature = "test-level")]
-pub const LEVELS: &[Level] = &[BASELINE, TEST];
+pub const LEVELS: &[Level] = &[BASELINE, FEDERATED_SIGN_IN, TEST];
 
 pub const MIN_LEVEL: u32 = 1;
 pub const MAX_LEVEL: u32 = if cfg!(feature = "test-level") { TEST_LEVEL } else { REAL_MAX };

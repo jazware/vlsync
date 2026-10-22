@@ -11,6 +11,11 @@
 //! turn a throttled answer into a step timeout. They are retried next step
 //! anyway, and a lost race there is a precondition failure, never a 429
 //! loop.
+//!
+//! A lease write's attempt also gets its own timeout ([`ctl_write_timeout`]),
+//! and [`LeaseWrites`] resends a CAS that got no answer: object_store
+//! retries a timeout or a reset only for idempotent requests, so one hung
+//! connection used to cost the whole renewal.
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -20,10 +25,11 @@ use object_store::client::{
 use object_store::path::Path;
 use object_store::{
     BackoffConfig, ClientOptions, CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
-    ObjectStore, PutMultipartOptions, PutOptions, PutPayload, PutResult, Result, RetryConfig,
+    ObjectStore, PutMode, PutMultipartOptions, PutOptions, PutPayload, PutResult, Result, RetryConfig,
 };
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::time::Instant;
 
 pub const KINDS: [&str; 3] = ["lease", "segment", "other"];
 
@@ -32,6 +38,20 @@ pub const KINDS: [&str; 3] = ["lease", "segment", "other"];
 pub const CTL_WRITE_FLOOR: Duration = Duration::from_secs(1);
 /// No retry of a lease write waits longer.
 pub const CTL_WRITE_CAP: Duration = Duration::from_secs(4);
+
+/// Bounds of [`ctl_write_timeout`]. Below the 2 s connect timeout an
+/// attempt couldn't open a fresh connection. Above 4 s a hung attempt
+/// leaves too little of a renewal interval for its resend; a lease PUT that
+/// takes over 4 s in one attempt is about 1 in 10,000 on R2.
+pub const CTL_ATTEMPT_MIN: Duration = Duration::from_secs(2);
+pub const CTL_ATTEMPT_MAX: Duration = Duration::from_secs(4);
+
+/// How long one attempt of a lease write may take before it's abandoned:
+/// a third of `renew_every`, so a hung one and its resend both fit before
+/// the next tick.
+pub fn ctl_write_timeout(renew_every: Duration) -> Duration {
+    (renew_every / 3).clamp(CTL_ATTEMPT_MIN, CTL_ATTEMPT_MAX)
+}
 
 /// `lease` for control-plane objects (node leases, assignments, writer
 /// claims, the cluster version), `segment` for commit-log segments.
@@ -158,23 +178,64 @@ impl HttpService for CountingService {
 }
 
 /// The control plane's client: writes to node leases (`nodes/`) on one
-/// with [`ctl_write_retry`], everything else on one with the default
-/// schedule.
+/// with [`ctl_write_retry`] and [`ctl_write_timeout`], everything else on
+/// one with the default schedule.
+///
+/// A lease CAS (`If-Match`) that got no answer is sent again, at least
+/// `resend_gap` after the last send, while that's within `resend_within`
+/// of the first. If the lost attempt landed, the resend answers
+/// `Precondition`, and the renewal reads the lease back and finds its own
+/// write. A create isn't resent: its resend would answer `AlreadyExists`,
+/// which some callers take for a lost race.
 #[derive(Debug)]
 pub struct LeaseWrites {
     pub plain: Arc<dyn ObjectStore>,
     pub lease: Arc<dyn ObjectStore>,
     pub prefix: String,
+    pub resend_gap: Duration,
+    pub resend_within: Duration,
 }
 
 impl LeaseWrites {
-    fn for_put(&self, location: &Path) -> &Arc<dyn ObjectStore> {
-        if crate::objstats::component(&self.prefix, location.as_ref()) == "ctl_lease" {
-            &self.lease
-        } else {
-            &self.plain
+    fn is_lease(&self, location: &Path) -> bool {
+        crate::objstats::component(&self.prefix, location.as_ref()) == "ctl_lease"
+    }
+
+    async fn put_lease(&self, location: &Path, payload: PutPayload, opts: PutOptions) -> Result<PutResult> {
+        if !matches!(opts.mode, PutMode::Update(_)) {
+            return self.lease.put_opts(location, payload, opts).await;
+        }
+        let first = Instant::now();
+        let mut gap = self.resend_gap;
+        loop {
+            let sent = Instant::now();
+            let e = match self.lease.put_opts(location, payload.clone(), opts.clone()).await {
+                Err(e) if unanswered(&e) => e,
+                r => return r,
+            };
+            let next = Instant::now().max(sent + gap);
+            if next >= first + self.resend_within {
+                return Err(e);
+            }
+            tracing::warn!(%location, after_ms = sent.elapsed().as_millis() as u64, "lease write got no answer: resending: {e}");
+            crate::metrics::LEASE_RESENDS.inc();
+            tokio::time::sleep_until(next).await;
+            gap = (gap * 2).min(CTL_WRITE_CAP);
         }
     }
+}
+
+/// A transport failure (a timeout, a reset): the request may or may not
+/// have landed, and no status came back.
+fn unanswered(e: &object_store::Error) -> bool {
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(x) = cur {
+        if x.downcast_ref::<HttpError>().is_some() {
+            return true;
+        }
+        cur = x.source();
+    }
+    false
 }
 
 impl std::fmt::Display for LeaseWrites {
@@ -186,7 +247,11 @@ impl std::fmt::Display for LeaseWrites {
 #[async_trait]
 impl ObjectStore for LeaseWrites {
     async fn put_opts(&self, location: &Path, payload: PutPayload, opts: PutOptions) -> Result<PutResult> {
-        self.for_put(location).put_opts(location, payload, opts).await
+        if self.is_lease(location) {
+            self.put_lease(location, payload, opts).await
+        } else {
+            self.plain.put_opts(location, payload, opts).await
+        }
     }
 
     async fn put_multipart_opts(&self, location: &Path, opts: PutMultipartOptions) -> Result<Box<dyn MultipartUpload>> {
@@ -268,6 +333,117 @@ mod tests {
         // the rest is object_store's default (10 retries within 3 min)
         let d = RetryConfig::default();
         assert_eq!((r.max_retries, r.retry_timeout), (d.max_retries, d.retry_timeout));
+    }
+
+    #[test]
+    fn ctl_attempts_take_a_third_of_the_renew_interval_within_bounds() {
+        let t = |s| ctl_write_timeout(Duration::from_secs(s));
+        assert_eq!(
+            (t(1), t(6), t(9), t(12), t(60)),
+            (CTL_ATTEMPT_MIN, CTL_ATTEMPT_MIN, Duration::from_secs(3), CTL_ATTEMPT_MAX, CTL_ATTEMPT_MAX)
+        );
+    }
+
+    /// Against a fake S3 whose first PUT to each key hangs: a lease CAS is
+    /// abandoned after its attempt timeout and resent on another connection
+    /// well inside the renew interval; one whose hung attempt landed gets a
+    /// precondition failure for its resend (the renewal reconciles that),
+    /// never a timeout; a create is never resent.
+    #[tokio::test]
+    async fn hung_lease_writes_are_resent_on_a_fresh_connection() {
+        use axum::extract::ConnectInfo;
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+        use object_store::UpdateVersion;
+        use std::collections::HashMap;
+        use std::net::SocketAddr;
+
+        type Hits = Arc<parking_lot::Mutex<Vec<(String, SocketAddr)>>>;
+        let hits: Hits = Default::default();
+        let etags: Arc<parking_lot::Mutex<HashMap<String, String>>> = Default::default();
+        let (h, stored) = (hits.clone(), etags.clone());
+        let app = axum::Router::new().fallback(
+            move |ConnectInfo(peer): ConnectInfo<SocketAddr>, req: axum::extract::Request| {
+                let (h, stored) = (h.clone(), stored.clone());
+                async move {
+                    let path = req.uri().path().to_string();
+                    let if_match = req.headers().get("if-match").map(|v| v.to_str().unwrap().to_string());
+                    let n = {
+                        let mut v = h.lock();
+                        v.push((path.clone(), peer));
+                        v.iter().filter(|(p, _)| *p == path).count()
+                    };
+                    if n == 1 {
+                        if path.contains("landed") {
+                            stored.lock().insert(path.clone(), "\"e1\"".into());
+                        }
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                    }
+                    let cur = stored.lock().get(&path).cloned().unwrap_or_else(|| "\"e0\"".into());
+                    if if_match.is_some_and(|m| m != cur) {
+                        return StatusCode::PRECONDITION_FAILED.into_response();
+                    }
+                    stored.lock().insert(path, "\"e2\"".into());
+                    (StatusCode::OK, [("etag", "\"e2\"")], "").into_response()
+                }
+            },
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap()
+        });
+        let cfg = crate::store::S3Config {
+            endpoint: format!("http://{addr}"),
+            bucket: "b".into(),
+            access_key: "k".into(),
+            secret_key: "s".into(),
+            region: "auto".into(),
+        };
+        let renew_every = Duration::from_secs(6);
+        let attempt = ctl_write_timeout(renew_every);
+        let ctl = crate::store::Store::s3_ctl(&cfg, "vlpds", 4, renew_every).unwrap();
+        let resends0 = crate::metrics::LEASE_RESENDS.get();
+
+        let cas = PutOptions {
+            mode: PutMode::Update(UpdateVersion { e_tag: Some("\"e0\"".into()), version: None }),
+            ..Default::default()
+        };
+        let create = PutOptions { mode: PutMode::Create, ..Default::default() };
+        let put = |key: &'static str, opts: PutOptions| {
+            let raw = ctl.raw.clone();
+            async move {
+                let t = Instant::now();
+                let r = raw.put_opts(&Path::from(key), PutPayload::from_static(b"{}"), opts).await;
+                (r, t.elapsed())
+            }
+        };
+        let ((hung, hung_took), (landed, landed_took), (created, created_took)) = tokio::join!(
+            put("vlpds/nodes/hung", cas.clone()),
+            put("vlpds/nodes/landed", cas),
+            put("vlpds/nodes/created", create),
+        );
+
+        let sent = |key: &str| -> Vec<SocketAddr> {
+            hits.lock().iter().filter(|(p, _)| p == &format!("/b/{key}")).map(|&(_, a)| a).collect()
+        };
+        assert_eq!(hung.unwrap().e_tag.as_deref(), Some("\"e2\""));
+        assert!(hung_took >= attempt && hung_took < renew_every / 2 + Duration::from_secs(1), "{hung_took:?}");
+        let peers = sent("vlpds/nodes/hung");
+        assert_eq!(peers.len(), 2);
+        assert_ne!(peers[0], peers[1], "the resend went out on another connection");
+
+        assert!(
+            matches!(landed, Err(object_store::Error::Precondition { .. })),
+            "a landed hung attempt reads as moved, for the caller to reconcile: {landed:?}"
+        );
+        assert!(landed_took < renew_every, "{landed_took:?}");
+        assert_eq!(sent("vlpds/nodes/landed").len(), 2);
+
+        assert!(created.is_err() && unanswered(created.as_ref().unwrap_err()), "{created:?}");
+        assert!(created_took >= attempt && created_took < attempt * 2, "{created_took:?}");
+        assert_eq!(sent("vlpds/nodes/created").len(), 1, "a create isn't resent");
+        assert!(crate::metrics::LEASE_RESENDS.get() - resends0 >= 2);
     }
 
     /// Against a fake S3 that answers each key's first two PUTs 429 (or a

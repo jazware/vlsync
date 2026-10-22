@@ -25,6 +25,7 @@ macro_rules! lazy {
 lazy!(SEGMENT_DECODES: IntCounter = register_int_counter!("vlpds_segment_decodes_total", "Compressed segments decompressed by readers (replay, follower catch-up, backfill, merger read-back)"));
 lazy!(OBJ_REQUESTS: IntCounterVec = register_int_counter_vec!("vlpds_object_store_requests_total", "Object-store requests sent to the store, by billable op (put, put_create, put_cas, get, get_range, head, list pages, delete (single DELETEs only), copy, mpu_*), key component, client pool and result (ok, not_found, precondition, timeout, error, cancelled: the caller dropped it unanswered) (objstats.rs)", &["op", "component", "client", "result"]));
 lazy!(STORE_THROTTLED: IntCounterVec = register_int_counter_vec!("vlpds_object_store_throttled_total", "Object-store answers of 429 Too Many Requests or 503 SlowDown (not other 503s), each one counted (object_store retries them inside its client, so vlpds_object_store_requests_total sees only the final result), by key kind (lease: node leases, assignments, writer claims, cluster version, LISTs by prefix; segment: commit-log segments; other, bulk deletes included) (throttle.rs)", &["kind"]));
+lazy!(LEASE_RESENDS: IntCounter = register_int_counter!("vlpds_object_store_lease_resends_total", "Node lease CAS writes sent again after an attempt got no answer (timed out or reset; object_store resends only idempotent requests) (throttle.rs)"));
 lazy!(OBJ_BYTES: IntCounterVec = register_int_counter_vec!("vlpds_object_store_bytes_total", "Object-store payload bytes by direction (up, down), key component and client pool", &["dir", "component", "client"]));
 lazy!(OBJ_INFLIGHT: IntGaugeVec = register_int_gauge_vec!("vlpds_object_store_inflight", "Object-store requests holding an in-flight permit, by client pool (log, state, ctl) and lane (main; reserved: log writes, ctl lease writes) (objlimit.rs)", &["client", "lane"]));
 lazy!(OBJ_INFLIGHT_LIMIT: IntGaugeVec = register_int_gauge_vec!("vlpds_object_store_inflight_limit", "In-flight permits of each object-store client pool and lane (--store-inflight, --log-store-inflight)", &["client", "lane"]));
@@ -54,6 +55,7 @@ fn init_counters() {
         for k in crate::throttle::KINDS {
             STORE_THROTTLED.with_label_values(&[k]);
         }
+        LazyLock::force(&LEASE_RESENDS);
     });
 }
 

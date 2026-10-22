@@ -4,7 +4,8 @@
 //! which is what a lost answer looks like through object_store).
 //!
 //! Faults are random at the configured rates (seeded, so a failing run
-//! replays), or armed one at a time with `fail_next` and `landed_next`.
+//! replays), or armed one at a time with `fail_next`, `landed_next` and
+//! `unanswered_next`.
 //! `pause` makes every call wait until `resume`, like a partitioned node.
 
 use async_trait::async_trait;
@@ -34,6 +35,7 @@ pub struct Knobs {
     pub lost_rate: Mutex<f64>,
     fail: AtomicU32,
     landed: AtomicU32,
+    unanswered: AtomicU32,
     fail_gets: AtomicU32,
     paused: watch::Sender<bool>,
     /// Faults injected so far.
@@ -49,6 +51,12 @@ impl Knobs {
     /// The next `n` PUTs land and answer a conflict.
     pub fn landed_next(&self, n: u32) {
         self.landed.store(n, Ordering::SeqCst);
+    }
+
+    /// The next `n` PUTs land and answer an error, as a conditional PUT's
+    /// timeout does when nothing resends it.
+    pub fn unanswered_next(&self, n: u32) {
+        self.unanswered.store(n, Ordering::SeqCst);
     }
 
     /// The next `n` GETs fail.
@@ -136,6 +144,7 @@ impl ChaosStore {
             lost_rate: Mutex::new(0.0),
             fail: AtomicU32::new(0),
             landed: AtomicU32::new(0),
+            unanswered: AtomicU32::new(0),
             fail_gets: AtomicU32::new(0),
             paused: watch::channel(false).0,
             injected: AtomicU64::new(0),
@@ -166,6 +175,10 @@ impl ObjectStore for ChaosStore {
         self.knobs.before().await?;
         let conditional = !matches!(opts.mode, PutMode::Overwrite);
         let r = self.inner.put_opts(location, payload, opts).await?;
+        if Knobs::take(&self.knobs.unanswered) {
+            self.knobs.injected.fetch_add(1, Ordering::Relaxed);
+            return Err(object_store::Error::Generic { store: "chaos", source: "landed, no answer".into() });
+        }
         if self.knobs.lost() {
             // object_store retried and the retry was refused (conditional),
             // or it gave up on a timeout (unconditional)

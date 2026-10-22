@@ -365,9 +365,12 @@ impl<T: LeaseBody> Holder<T> {
                         }
                         // Only we write our incarnation without `ended`: the
                         // stored version is one of our writes whose answer
-                        // was lost (this one, or the one before it).
+                        // was lost. This one if it's what we sent; an
+                        // earlier one (same `renewals`: a failed write
+                        // bumps nothing) went out before `sent`, so it's
+                        // adopted and written over, granting nothing.
                         Some(v) if v.value.incarnation == next.incarnation => {
-                            if v.value.renewals == next.renewals {
+                            if v.value == next {
                                 self.landed(&next, v.etag, sent);
                                 return Ok(());
                             }

@@ -207,6 +207,30 @@ async fn a_renewal_whose_answer_was_lost_is_adopted() {
     b.renew().await.unwrap();
 }
 
+/// A renewal that landed but answered an error (a timeout nothing resent)
+/// isn't mistaken for the next renewal's write when that one's CAS fails:
+/// both carry the same `renewals`, but the earlier one was sent before the
+/// next one's send, so validity from that send would outlast what peers
+/// grant. It's adopted, and a fresh write earns the validity.
+#[tokio::test(start_paused = true)]
+async fn an_earlier_unanswered_renewal_is_written_over_not_taken_as_this_one() {
+    let mem = shared();
+    let (s, c) = client(&mem, 1);
+    let h = holder(&s, "a", "a1").await;
+    c.knobs().unanswered_next(1);
+    assert!(matches!(h.renew().await, Err(RenewError::Transient(_))));
+    let stored = cas::read::<NodeLease<()>>(&s, &rel("a")).await.unwrap().unwrap();
+    assert_eq!((stored.value.renewals, h.lease().renewals), (2, 1), "landed, unknown to the holder");
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    // its `expires_ms` must differ from the earlier write's, as a second
+    // of wall clock apart would make it (paused time doesn't move it)
+    std::thread::sleep(Duration::from_millis(5));
+    h.renew().await.unwrap();
+    let stored = cas::read::<NodeLease<()>>(&s, &rel("a")).await.unwrap().unwrap();
+    assert_eq!((stored.value.renewals, h.lease().renewals), (3, 3), "written over");
+    assert!(h.valid());
+}
+
 /// A lapsed lease is never renewed: peers may have fenced us meanwhile.
 #[tokio::test(start_paused = true)]
 async fn a_lapsed_lease_is_never_renewed() {

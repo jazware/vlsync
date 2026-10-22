@@ -6,6 +6,8 @@ use object_store::ObjectStore;
 use std::sync::Arc;
 use std::time::Duration;
 
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[derive(Clone)]
 pub struct Store {
     pub raw: Arc<dyn ObjectStore>,
@@ -54,29 +56,41 @@ impl Store {
         connections: usize,
         unsigned_payload: bool,
     ) -> anyhow::Result<Store> {
-        let s3 = Self::s3_builder(cfg, prefix, connections, unsigned_payload).build()?;
+        let s3 = Self::s3_builder(cfg, prefix, connections, unsigned_payload, REQUEST_TIMEOUT).build()?;
         Ok(Store { raw: Arc::new(s3), prefix: prefix.trim_end_matches('/').to_string(), latency })
     }
 
     /// The control plane's client: writes to node leases back off from a
     /// floor of min(1 s, `renew_every`) on throttling
-    /// ([`crate::throttle::ctl_write_retry`]), everything else keeps the
-    /// default schedule. Each half pools up to `connections`.
+    /// ([`crate::throttle::ctl_write_retry`]), give up on an attempt after
+    /// [`crate::throttle::ctl_write_timeout`] and resend it (see
+    /// [`crate::throttle::LeaseWrites`]); everything else keeps the default
+    /// schedule and timeout. Each half pools up to `connections`.
     pub fn s3_ctl(cfg: &S3Config, prefix: &str, connections: usize, renew_every: Duration) -> anyhow::Result<Store> {
-        let plain = Self::s3_builder(cfg, prefix, connections, false).build()?;
-        let lease = Self::s3_builder(cfg, prefix, connections, false)
-            .with_retry(crate::throttle::ctl_write_retry(rand::random(), renew_every))
+        let plain = Self::s3_builder(cfg, prefix, connections, false, REQUEST_TIMEOUT).build()?;
+        let retry = crate::throttle::ctl_write_retry(rand::random(), renew_every);
+        let resend_gap = retry.backoff.init_backoff;
+        let lease = Self::s3_builder(cfg, prefix, connections, false, crate::throttle::ctl_write_timeout(renew_every))
+            .with_retry(retry)
             .build()?;
         let prefix = prefix.trim_end_matches('/').to_string();
         let raw = Arc::new(crate::throttle::LeaseWrites {
             plain: Arc::new(plain),
             lease: Arc::new(lease),
             prefix: prefix.clone(),
+            resend_gap,
+            resend_within: renew_every,
         });
         Ok(Store { raw, prefix, latency: None })
     }
 
-    fn s3_builder(cfg: &S3Config, prefix: &str, connections: usize, unsigned_payload: bool) -> AmazonS3Builder {
+    fn s3_builder(
+        cfg: &S3Config,
+        prefix: &str,
+        connections: usize,
+        unsigned_payload: bool,
+        timeout: Duration,
+    ) -> AmazonS3Builder {
         AmazonS3Builder::new()
             .with_http_connector(crate::throttle::Counting::new(&cfg.bucket, prefix))
             .with_unsigned_payload(unsigned_payload)
@@ -100,7 +114,7 @@ impl Store {
                     .with_pool_max_idle_per_host(connections.max(1))
                     .with_pool_idle_timeout(Duration::from_secs(15))
                     .with_connect_timeout(Duration::from_secs(2))
-                    .with_timeout(Duration::from_secs(30))
+                    .with_timeout(timeout)
                     // must be set after with_client_options would overwrite it
                     .with_allow_http(cfg.endpoint.starts_with("http://")),
             )

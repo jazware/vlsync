@@ -41,8 +41,11 @@ pub const CTL_WRITE_CAP: Duration = Duration::from_secs(4);
 
 /// Bounds of [`ctl_write_timeout`]. Below the 2 s connect timeout an
 /// attempt couldn't open a fresh connection. Above 4 s a hung attempt
-/// leaves too little of a renewal interval for its resend; a lease PUT that
-/// takes over 4 s in one attempt is about 1 in 10,000 on R2.
+/// leaves too little of a renewal interval for its resend. A lease PUT
+/// takes over 4 s about 1 in 10,000 on R2, but slow ones come in runs on
+/// one key: the caller must adopt its own write when the resend answers
+/// `Precondition`, with the validity of its send, or every renewal in the
+/// run earns nothing.
 pub const CTL_ATTEMPT_MIN: Duration = Duration::from_secs(2);
 pub const CTL_ATTEMPT_MAX: Duration = Duration::from_secs(4);
 
@@ -184,7 +187,7 @@ impl HttpService for CountingService {
 /// A lease CAS (`If-Match`) that got no answer is sent again, at least
 /// `resend_gap` after the last send, while that's within `resend_within`
 /// of the first. If the lost attempt landed, the resend answers
-/// `Precondition`, and the renewal reads the lease back and finds its own
+/// `Precondition`, and the caller reads the lease back and finds its own
 /// write. A create isn't resent: its resend would answer `AlreadyExists`,
 /// which some callers take for a lost race.
 #[derive(Debug)]

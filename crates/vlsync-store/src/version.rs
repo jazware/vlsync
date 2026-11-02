@@ -45,7 +45,22 @@ const FEDERATED_SIGN_IN: Level = Level {
 
 pub const FEDERATED_SIGN_IN_LEVEL: u32 = FEDERATED_SIGN_IN.level;
 
-pub const REAL_MAX: u32 = 2;
+/// vlpds's node leases publish their holder's TTL, skew and renew interval,
+/// which peers wait out before presuming it dead: a peer that doesn't know
+/// them judges a long-TTL node by its own shorter TTL and can take over a
+/// live node, so they are written only once every node reads them.
+/// Persistent: lowering it would bring that back without a word.
+const LEASE_TIMING: Level = Level {
+    level: 3,
+    name: "lease-timing",
+    description: "ttl_ms, skew_ms and renew_ms on nodes/ leases",
+    persistent: true,
+    segment_magic: None,
+};
+
+pub const LEASE_TIMING_LEVEL: u32 = LEASE_TIMING.level;
+
+pub const REAL_MAX: u32 = 3;
 
 /// Compiled in only with the `test-level` cargo feature (never a release
 /// image). It changes two on-bucket formats the way a real level would
@@ -68,15 +83,15 @@ const TEST: Level = Level {
 
 /// Oldest first.
 #[cfg(not(feature = "test-level"))]
-pub const LEVELS: &[Level] = &[BASELINE, FEDERATED_SIGN_IN];
+pub const LEVELS: &[Level] = &[BASELINE, FEDERATED_SIGN_IN, LEASE_TIMING];
 #[cfg(feature = "test-level")]
-pub const LEVELS: &[Level] = &[BASELINE, FEDERATED_SIGN_IN, TEST];
+pub const LEVELS: &[Level] = &[BASELINE, FEDERATED_SIGN_IN, LEASE_TIMING, TEST];
 
 pub const MIN_LEVEL: u32 = 1;
 pub const MAX_LEVEL: u32 = if cfg!(feature = "test-level") { TEST_LEVEL } else { REAL_MAX };
 /// Highest level that has shipped: its fixtures are frozen by
 /// testdata/formats/MANIFEST.
-pub const RELEASED: u32 = 1;
+pub const RELEASED: u32 = 2;
 
 pub fn test_level_active() -> bool {
     cfg!(feature = "test-level") && active() >= TEST_LEVEL
